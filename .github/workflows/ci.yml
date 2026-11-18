@@ -1,6 +1,6 @@
 name: CI
 
-# Сборка и тесты на каждый push в main и на pull request'ы.
+# Сборка и тесты на каждый push в master и на pull request'ы.
 on:
   push:
     branches: [master]
