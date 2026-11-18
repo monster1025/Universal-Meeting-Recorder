@@ -78,6 +78,7 @@ public static class MeetingJson
         if (m.EndDate is { } end) o["endDate"] = IsoDate.Format(end);
         Put(o, "remoteStatus", m.RemoteStatus);
         if (m.SpeakrRecordingID is { } rid) o["speakrRecordingID"] = rid;
+        Put(o, "mendeleevMeetingId", m.MendeleevMeetingId);
         Put(o, "transcriptFileName", m.TranscriptFileName);
         Put(o, "transcriptMarkdownFileName", m.TranscriptMarkdownFileName);
         Put(o, "summaryFileName", m.SummaryFileName);
@@ -141,6 +142,7 @@ public static class MeetingJson
             Status = StatusFromString(Req(r, "status").GetString()!),
             RemoteStatus = Str(r, "remoteStatus"),
             SpeakrRecordingID = Opt(r, "speakrRecordingID") is { } rid ? rid.GetInt32() : null,
+            MendeleevMeetingId = Str(r, "mendeleevMeetingId"),
             TranscriptFileName = Str(r, "transcriptFileName"),
             TranscriptMarkdownFileName = Str(r, "transcriptMarkdownFileName"),
             SummaryFileName = Str(r, "summaryFileName"),

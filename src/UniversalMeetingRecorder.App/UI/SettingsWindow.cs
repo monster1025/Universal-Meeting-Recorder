@@ -3,10 +3,11 @@ using System.Windows.Controls;
 using UniversalMeetingRecorder.App.Platform;
 using UniversalMeetingRecorder.Core.Calendar;
 using UniversalMeetingRecorder.Core.LLM;
+using UniversalMeetingRecorder.Core.Transcription;
 
 namespace UniversalMeetingRecorder.App.UI;
 
-/// <summary>Настройки — те же пять вкладок, что на Mac (Общее, Запись, Speakr, Задачи, Календарь).</summary>
+/// <summary>Настройки — те же пять вкладок, что на Mac (Общее, Запись, Транскрипция, Задачи, Календарь).</summary>
 internal sealed class SettingsWindow : Window
 {
     private readonly AppServices _s;
@@ -28,15 +29,17 @@ internal sealed class SettingsWindow : Window
         var tabs = new TabControl { Margin = new Thickness(8) };
         tabs.Items.Add(Tab("Общее", General()));
         tabs.Items.Add(Tab("Запись", Recording()));
-        tabs.Items.Add(Tab("Speakr", Speakr()));
+        tabs.Items.Add(Tab("Транскрипция", Transcription()));
         tabs.Items.Add(Tab("Задачи", Tasks()));
         tabs.Items.Add(Tab("Календарь", CalendarTab()));
         Content = tabs;
 
+        _s.Mendeleev.Changed += OnMendeleevChanged;
         _s.Calendar.Changed += OnCalendarChanged;
         _s.ReminderScheduler.PropertyChanged += OnSchedulerChanged;
         Closed += (_, _) =>
         {
+            _s.Mendeleev.Changed -= OnMendeleevChanged;
             _s.Calendar.Changed -= OnCalendarChanged;
             _s.ReminderScheduler.PropertyChanged -= OnSchedulerChanged;
         };
@@ -172,22 +175,104 @@ internal sealed class SettingsWindow : Window
         return p;
     }
 
-    // ----- Speakr -----
+    // ----- Транскрипция (Speakr / НейроМенделеев) -----
 
-    private UIElement Speakr()
+    private TextBlock? _mendeleevStatus;
+
+    private UIElement Transcription()
     {
         var p = new StackPanel();
-        p.Children.Add(Section("Инстанс"));
-        p.Children.Add(Labeled("Base URL", Field(_s.Settings.SpeakrBaseUrl, v => _s.Settings.SpeakrBaseUrl = v, "https://speakr.example.com")));
-        p.Children.Add(Labeled("API-ключ", Secret(_s.Settings.SpeakrApiKey, v => _s.Settings.SpeakrApiKey = v)));
-        p.Children.Add(Note("Ключ выдаётся в Speakr: Settings → API Tokens. Хранится в диспетчере учётных данных Windows, не в файле настроек."));
+        p.Children.Add(Section("Сервис транскрипции"));
+        var speakr = new RadioButton { Content = "Speakr", GroupName = "backend", Margin = new Thickness(0, 2, 0, 2), IsChecked = _s.Settings.TranscriptionBackend == TranscriptionBackends.Speakr };
+        var mendeleev = new RadioButton { Content = "НейроМенделеев", GroupName = "backend", Margin = new Thickness(0, 2, 0, 2), IsChecked = _s.Settings.TranscriptionBackend == TranscriptionBackends.Mendeleev };
+        p.Children.Add(speakr);
+        p.Children.Add(mendeleev);
+        p.Children.Add(Note("Работает один сервис: новые записи уходят в выбранный. Уже загруженные встречи дорабатывает тот сервис, в который они были отправлены, — переключение их не ломает."));
+
+        var speakrPanel = new StackPanel();
+        speakrPanel.Children.Add(Section("Speakr"));
+        speakrPanel.Children.Add(Labeled("Base URL", Field(_s.Settings.SpeakrBaseUrl, v => _s.Settings.SpeakrBaseUrl = v, "https://speakr.example.com")));
+        speakrPanel.Children.Add(Labeled("API-ключ", Secret(_s.Settings.SpeakrApiKey, v => _s.Settings.SpeakrApiKey = v)));
+        speakrPanel.Children.Add(Note("Ключ выдаётся в Speakr: Settings → API Tokens. Хранится в диспетчере учётных данных Windows, не в файле настроек."));
+        p.Children.Add(speakrPanel);
+
+        var mendeleevPanel = new StackPanel();
+        mendeleevPanel.Children.Add(Section("НейроМенделеев"));
+        mendeleevPanel.Children.Add(Labeled("Адрес сервера", Field(_s.Settings.MendeleevBaseUrl, v =>
+        {
+            _s.Settings.MendeleevBaseUrl = v;
+            RenderMendeleevStatus();
+        }, "https://mendeleev.example.com")));
+        _mendeleevStatus = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 6) };
+        mendeleevPanel.Children.Add(_mendeleevStatus);
+        var signIn = Ui.Button("Войти", async () =>
+        {
+            _mendeleevStatus!.Text = "Выполняется вход…";
+            _mendeleevStatus.Foreground = Ui.Brush("Secondary");
+            try
+            {
+                await _s.Mendeleev.SignIn(default);
+            }
+            catch (Exception ex)
+            {
+                _mendeleevStatus.Text = "⚠ " + ex.Message;
+                _mendeleevStatus.Foreground = Ui.Brush("Orange");
+                return;
+            }
+            RenderMendeleevStatus();
+        });
+        var signOut = Ui.Button("Выйти", () => _s.Mendeleev.SignOut());
+        mendeleevPanel.Children.Add(Ui.Row(signIn, signOut));
+        mendeleevPanel.Children.Add(Note("Вход — через SSO (Keycloak) во встроенном браузере, настраивать Keycloak не нужно. Если на компьютере работает Windows-авторизация, окно мелькнёт на секунду и закроется само; иначе откроется обычная форма входа. Токен хранится в диспетчере учётных данных Windows и продлевается автоматически; когда продлить нельзя, приложение входит заново."));
+        p.Children.Add(mendeleevPanel);
+
+        void ShowPanel()
+        {
+            var isMendeleev = mendeleev.IsChecked == true;
+            speakrPanel.Visibility = isMendeleev ? Visibility.Collapsed : Visibility.Visible;
+            mendeleevPanel.Visibility = isMendeleev ? Visibility.Visible : Visibility.Collapsed;
+        }
+        speakr.Checked += (_, _) =>
+        {
+            _s.Settings.TranscriptionBackend = TranscriptionBackends.Speakr;
+            ShowPanel();
+        };
+        mendeleev.Checked += (_, _) =>
+        {
+            _s.Settings.TranscriptionBackend = TranscriptionBackends.Mendeleev;
+            ShowPanel();
+        };
+        ShowPanel();
+        RenderMendeleevStatus();
+
         p.Children.Add(Section("Что выгружать"));
         p.Children.Add(Toggle("Не выгружать записи короче 2 минут", _s.Settings.SkipShortRecordingsEnabled, on => _s.Settings.SkipShortRecordingsEnabled = on));
         p.Children.Add(Note("Короткие записи остаются локально со статусом «короткая, не выгружена» — любую из них можно отправить вручную из карточки встречи."));
         p.Children.Add(Section("После обработки"));
-        p.Children.Add(Toggle("Удалять загруженные конференции из Спикера по API", _s.Settings.DeleteAfterUploadEnabled, on => _s.Settings.DeleteAfterUploadEnabled = on));
+        p.Children.Add(Toggle("Удалять загруженные конференции с сервера транскрипции по API", _s.Settings.DeleteAfterUploadEnabled, on => _s.Settings.DeleteAfterUploadEnabled = on));
         p.Children.Add(Note("Локальные файлы не удаляются никогда — только копия на сервере."));
         return p;
+    }
+
+    private void RenderMendeleevStatus()
+    {
+        if (_mendeleevStatus is null) return;
+        var session = _s.Mendeleev;
+        if (session.BaseUri is null)
+        {
+            _mendeleevStatus.Text = "Укажите адрес сервера.";
+            _mendeleevStatus.Foreground = Ui.Brush("Secondary");
+        }
+        else if (session.IsValid)
+        {
+            _mendeleevStatus.Text = $"✓ Вход выполнен: {session.UserName ?? "пользователь"} (токен действует до {session.ExpiresUtc!.Value.ToLocalTime():d MMM HH:mm})";
+            _mendeleevStatus.Foreground = Ui.Brush("Green");
+        }
+        else
+        {
+            _mendeleevStatus.Text = session.HasToken ? "⚠ Токен истёк — приложение войдёт заново при следующей выгрузке или по кнопке «Войти»." : "Вход не выполнен.";
+            _mendeleevStatus.Foreground = Ui.Brush("Orange");
+        }
     }
 
     // ----- Задачи -----
@@ -343,6 +428,8 @@ internal sealed class SettingsWindow : Window
 
     private StackPanel? _ongoingPanel;
     private CheckBox? _reminderToggle;
+
+    private void OnMendeleevChanged() => Dispatcher.BeginInvoke(RenderMendeleevStatus);
 
     private void OnCalendarChanged() => Dispatcher.BeginInvoke(RenderCalendar);
 

@@ -64,6 +64,12 @@ public sealed class Meeting
     public MeetingStatus Status { get; set; } = MeetingStatus.Recorded;
     public string? RemoteStatus { get; set; }
     public int? SpeakrRecordingID { get; set; }
+    /// <summary>
+    /// Только Windows: ID встречи в НейроМенделееве (UUID-строка). Взаимоисключающе со SpeakrRecordingID:
+    /// какой из них заполнен, тот сервис и обрабатывает запись — переключение сервиса в настройках
+    /// не ломает уже загруженные встречи. Mac неизвестный ключ игнорирует.
+    /// </summary>
+    public string? MendeleevMeetingId { get; set; }
     public string? TranscriptFileName { get; set; }
     public string? TranscriptMarkdownFileName { get; set; }
     public string? SummaryFileName { get; set; }
@@ -99,6 +105,9 @@ public sealed class Meeting
 
     /// <summary>Дошла ли запись до сведённого m4a.</summary>
     public bool HasEncodedAudio => Status is not (MeetingStatus.Recording or MeetingStatus.Converting or MeetingStatus.Interrupted);
+
+    /// <summary>Запись уже уехала на сервер транскрипции (любой из двух).</summary>
+    public bool HasRemoteRecording => SpeakrRecordingID is not null || MendeleevMeetingId is not null;
 
     public TimeSpan? Duration => EndDate is { } end ? end - StartDate : null;
 

@@ -2,12 +2,16 @@ using UniversalMeetingRecorder.Core.Audio;
 using UniversalMeetingRecorder.Core.Meetings;
 using UniversalMeetingRecorder.Core.Settings;
 using UniversalMeetingRecorder.Core.Speakr;
+using UniversalMeetingRecorder.Core.Transcription;
 
 namespace UniversalMeetingRecorder.Core.Tests;
 
 public class PipelineTests
 {
     private static AppSettings Settings() => new(null, new InMemorySecretStore()) { SpeakrBaseUrl = "http://speakr", SpeakrApiKey = "key" };
+
+    private static Func<string, ITranscriptionBackend?> SpeakrOnly(HttpMessageHandler handler) =>
+        kind => kind == TranscriptionBackends.Speakr ? new SpeakrBackend(SpeakrClient.Create("http://speakr", "key", handler)!) : null;
 
     private static Meeting NewMeeting(MeetingStore store, TimeSpan duration, MeetingStatus status = MeetingStatus.Recorded)
     {
@@ -54,7 +58,7 @@ public class PipelineTests
             }
             return FakeHandler.Json("{}", 500);
         });
-        var pipeline = new UploadPipeline(store, settings, (u, k) => SpeakrClient.Create(u, k, handler)) { PollInterval = TimeSpan.FromMilliseconds(10) };
+        var pipeline = new UploadPipeline(store, settings, SpeakrOnly(handler)) { PollInterval = TimeSpan.FromMilliseconds(10) };
         Guid? done = null;
         pipeline.MeetingDone += id => done = id;
         var m = NewMeeting(store, TimeSpan.FromMinutes(5));
@@ -77,7 +81,7 @@ public class PipelineTests
         using var dir = new TempDir();
         var store = new MeetingStore(dir.Path);
         var handler = new FakeHandler(_ => FakeHandler.Json("{}", 500));
-        var pipeline = new UploadPipeline(store, Settings(), (u, k) => SpeakrClient.Create(u, k, handler));
+        var pipeline = new UploadPipeline(store, Settings(), SpeakrOnly(handler));
         var m = NewMeeting(store, TimeSpan.FromSeconds(60));
         pipeline.Enqueue(m);
         Assert.Equal(MeetingStatus.Skipped, store.Find(m.Id)!.Status);

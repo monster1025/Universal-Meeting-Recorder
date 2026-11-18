@@ -4,6 +4,7 @@ using System.Windows.Input;
 using UniversalMeetingRecorder.App.Platform;
 using UniversalMeetingRecorder.Core.Meetings;
 using UniversalMeetingRecorder.Core.Speakr;
+using UniversalMeetingRecorder.Core.Transcription;
 using UniversalMeetingRecorder.Core.Tasks;
 
 namespace UniversalMeetingRecorder.App.UI;
@@ -151,9 +152,9 @@ internal sealed class MeetingsWindow : Window
     {
         var menu = new ContextMenu();
         menu.Items.Add(MenuItem("Открыть папку встречи", () => Shell.OpenFolder(_s.Meetings.FolderPath(m))));
-        if (m.SpeakrRecordingID is { } rid && !m.DeletedRemotely && SpeakrClient.WebUrl(_s.Settings.SpeakrBaseUrl, rid) is { } url)
+        if (!m.DeletedRemotely && RemoteLinks.WebUrl(m, _s.Settings) is { } url)
         {
-            menu.Items.Add(MenuItem("Открыть в Speakr", () => Shell.Open(url)));
+            menu.Items.Add(MenuItem($"Открыть в {Service(m)}", () => Shell.Open(url)));
         }
         if (m.HasEncodedAudio) menu.Items.Add(MenuItem("Транскрибировать заново", () => _s.Upload.Retranscribe(m)));
         menu.Items.Add(new Separator());
@@ -162,6 +163,12 @@ internal sealed class MeetingsWindow : Window
         menu.Items.Add(delete);
         return menu;
     }
+
+    /// <summary>Сервис, куда загружена встреча (для подписей: «Speakr» / «НейроМенделеев»).</summary>
+    private static string Service(Meeting m) => TranscriptionBackends.Display(RemoteLinks.BackendOf(m));
+
+    /// <summary>Сервис, выбранный в настройках, — куда уйдёт новая выгрузка.</summary>
+    private string Selected => TranscriptionBackends.Display(_s.Settings.TranscriptionBackend);
 
     private static MenuItem MenuItem(string header, Action action)
     {
@@ -173,7 +180,7 @@ internal sealed class MeetingsWindow : Window
     private void ConfirmDelete(Meeting m)
     {
         var answer = MessageBox.Show(this,
-            $"Папка «{m.FolderName}» со всеми файлами будет перемещена в Корзину. На Speakr запись не трогаем.",
+            $"Папка «{m.FolderName}» со всеми файлами будет перемещена в Корзину. На сервере транскрипции запись не трогаем.",
             "Удалить встречу?", MessageBoxButton.OKCancel, MessageBoxImage.Warning, MessageBoxResult.Cancel);
         if (answer != MessageBoxResult.OK) return;
         _s.Upload.Cancel(m.Id);
@@ -218,11 +225,11 @@ internal sealed class MeetingsWindow : Window
             panel.Children.Add(Ui.Banner("Red", Ui.Text(error, color: Ui.Brush("Red")), Ui.Button("Повторить", () => _s.Upload.Retranscribe(m))));
         }
 
-        if (_s.Settings.DeleteAfterUploadEnabled && m.Status == MeetingStatus.Done && m.SpeakrRecordingID is not null && !m.DeletedRemotely)
+        if (_s.Settings.DeleteAfterUploadEnabled && m.Status == MeetingStatus.Done && m.HasRemoteRecording && !m.DeletedRemotely)
         {
-            var items = new List<UIElement> { Ui.Text("⚠ Запись не удалена из Speakr", color: Ui.Brush("Orange")) };
+            var items = new List<UIElement> { Ui.Text($"⚠ Запись не удалена из {Service(m)}", color: Ui.Brush("Orange")) };
             if (m.ErrorMessage is { } e) items.Add(Ui.Caption(e));
-            items.Add(Ui.Button("Удалить в Speakr", () => _s.Upload.DeleteRemotely(m)));
+            items.Add(Ui.Button($"Удалить в {Service(m)}", () => _s.Upload.DeleteRemotely(m)));
             panel.Children.Add(Ui.Banner("Orange", items.ToArray()));
         }
 
@@ -255,9 +262,9 @@ internal sealed class MeetingsWindow : Window
             Ui.Text("⚠ Запись не сведена", color: Ui.Brush("Orange")),
             Ui.Caption(m.ErrorMessage ?? "Приложение завершилось до конца звонка. Сырые дорожки сохранены — сведение запустится автоматически при следующем запуске.")),
         MeetingStatus.Skipped => Ui.Banner("Gray",
-            Ui.Text($"Не выгружена в Speakr: запись короче {(int)UploadPipeline.MinUploadDuration.TotalMinutes} минут"),
-            Ui.Caption("Так настроено во вкладке «Speakr». Файлы встречи лежат на месте — выгрузить можно вручную."),
-            Ui.Button("Выгрузить в Speakr", () => _s.Upload.Retranscribe(m))),
+            Ui.Text($"Не выгружена в {Selected}: запись короче {(int)UploadPipeline.MinUploadDuration.TotalMinutes} минут"),
+            Ui.Caption("Так настроено во вкладке «Транскрипция». Файлы встречи лежат на месте — выгрузить можно вручную."),
+            Ui.Button($"Выгрузить в {Selected}", () => _s.Upload.Retranscribe(m))),
         _ => null,
     };
 

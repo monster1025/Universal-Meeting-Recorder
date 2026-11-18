@@ -8,6 +8,7 @@ using UniversalMeetingRecorder.App.UI;
 using UniversalMeetingRecorder.Core.Meetings;
 using UniversalMeetingRecorder.Core.Settings;
 using UniversalMeetingRecorder.Core.Tasks;
+using UniversalMeetingRecorder.Core.Transcription;
 using UniversalMeetingRecorder.Core.Util;
 
 namespace UniversalMeetingRecorder.App;
@@ -23,6 +24,7 @@ internal sealed class AppServices : IDisposable
     public Dispatcher Ui { get; }
     public AppSettings Settings { get; }
     public MeetingStore Meetings { get; }
+    public MendeleevSession Mendeleev { get; }
     public UploadPipeline Upload { get; }
     public TaskStore Tasks { get; }
     public ActionItemService ActionItems { get; }
@@ -43,9 +45,11 @@ internal sealed class AppServices : IDisposable
     public AppServices(Dispatcher ui)
     {
         Ui = ui;
-        Settings = new AppSettings(AppPaths.SettingsFile, new CredentialStore());
+        var secrets = new CredentialStore();
+        Settings = new AppSettings(AppPaths.SettingsFile, secrets);
         Meetings = new MeetingStore(Settings.RecordingsRootPath);
-        Upload = new UploadPipeline(Meetings, Settings);
+        Mendeleev = new MendeleevSession(secrets, () => Settings.MendeleevBaseUrl, new WebView2SsoBrowser(ui));
+        Upload = new UploadPipeline(Meetings, Settings, TranscriptionBackendFactory.Create(Settings, Mendeleev));
         Tasks = new TaskStore(AppSettings.DefaultTasksDatabasePath);
         ActionItems = new ActionItemService(Meetings, Tasks, Settings);
         Upload.MeetingDone += id => ActionItems.ExtractIfEnabled(id);

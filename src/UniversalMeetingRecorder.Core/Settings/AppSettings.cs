@@ -110,6 +110,24 @@ public sealed class AppSettings : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
     }
 
+    // ----- Сервис транскрипции -----
+
+    /// <summary>Куда отправлять записи: «speakr» или «mendeleev». Один из двух; у уже загруженных встреч свой сервис.</summary>
+    public string TranscriptionBackend
+    {
+        get => Get("transcriptionBackend", Transcription.TranscriptionBackends.Speakr) is Transcription.TranscriptionBackends.Mendeleev
+            ? Transcription.TranscriptionBackends.Mendeleev
+            : Transcription.TranscriptionBackends.Speakr;
+        set => Set("transcriptionBackend", value);
+    }
+
+    /// <summary>Адрес сервера НейроМенделеева. Токен входа хранится в хранилище секретов (см. MendeleevSession).</summary>
+    public string MendeleevBaseUrl
+    {
+        get => Get("mendeleevBaseURL", "");
+        set => Set("mendeleevBaseURL", value);
+    }
+
     // ----- Speakr -----
 
     public bool DeleteAfterUploadEnabled

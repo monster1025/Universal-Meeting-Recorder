@@ -1,13 +1,15 @@
 using UniversalMeetingRecorder.Core.Settings;
-using UniversalMeetingRecorder.Core.Speakr;
+using UniversalMeetingRecorder.Core.Transcription;
 using UniversalMeetingRecorder.Core.Util;
 
 namespace UniversalMeetingRecorder.Core.Meetings;
 
 /// <summary>
 /// State machine загрузки: recorded → uploading → processing → done (или failed). Переживает
-/// убийство приложения: ID записи в Speakr пишется в meeting.json сразу после ответа upload,
+/// убийство приложения: ID записи на сервере пишется в meeting.json сразу после ответа upload,
 /// ДО поллинга, поэтому ResumeAll() отличает «не загружалось» от «загружено, продолжать поллинг».
+/// Сервисов два (Speakr и НейроМенделеев), работает один: новые записи уходят в выбранный в настройках,
+/// а уже загруженные встречи дорабатывает тот сервис, чей ID у них записан.
 /// </summary>
 public sealed class UploadPipeline
 {
@@ -16,7 +18,7 @@ public sealed class UploadPipeline
 
     private readonly MeetingStore _store;
     private readonly AppSettings _settings;
-    private readonly Func<string, string, SpeakrClient?> _clientFactory;
+    private readonly Func<string, ITranscriptionBackend?> _backends;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, (CancellationTokenSource Cts, Guid Token)> _running = new();
 
@@ -25,11 +27,11 @@ public sealed class UploadPipeline
     /// <summary>Встреча дошла до done (транскрипт и саммари уже на диске).</summary>
     public event Action<Guid>? MeetingDone;
 
-    public UploadPipeline(MeetingStore store, AppSettings settings, Func<string, string, SpeakrClient?>? clientFactory = null)
+    public UploadPipeline(MeetingStore store, AppSettings settings, Func<string, ITranscriptionBackend?>? backends = null)
     {
         _store = store;
         _settings = settings;
-        _clientFactory = clientFactory ?? ((url, key) => SpeakrClient.Create(url, key));
+        _backends = backends ?? TranscriptionBackendFactory.Create(settings, null);
     }
 
     /// <summary>Подхватывает всё, что зависло в uploading/processing (после перезапуска).</summary>
@@ -94,7 +96,7 @@ public sealed class UploadPipeline
 
     /// <summary>Короткая — только ни разу не уезжавшая на сервер запись: начатую работу не обрываем.</summary>
     private bool IsTooShortToUpload(Meeting meeting) =>
-        _settings.SkipShortRecordingsEnabled && meeting.SpeakrRecordingID is null &&
+        _settings.SkipShortRecordingsEnabled && !meeting.HasRemoteRecording &&
         meeting.Duration is { } d && d < MinUploadDuration;
 
     public bool IsRunning(Guid meetingId)
@@ -136,6 +138,7 @@ public sealed class UploadPipeline
         {
             m.Status = MeetingStatus.Recorded;
             m.SpeakrRecordingID = null;
+            m.MendeleevMeetingId = null;
             m.RemoteStatus = null;
             m.TranscriptFileName = null;
             m.TranscriptMarkdownFileName = null;
@@ -146,21 +149,37 @@ public sealed class UploadPipeline
         if (saved is not null) Enqueue(saved, force: true);
     }
 
+    /// <summary>Какой сервис ведёт эту встречу: тот, чей ID записан, иначе — выбранный в настройках.</summary>
+    private string KindOf(Meeting m) =>
+        m.MendeleevMeetingId is not null ? TranscriptionBackends.Mendeleev
+        : m.SpeakrRecordingID is not null ? TranscriptionBackends.Speakr
+        : _settings.TranscriptionBackend;
+
+    private static string? RemoteIdOf(Meeting m) =>
+        m.MendeleevMeetingId ?? m.SpeakrRecordingID?.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private static void SetRemoteId(Meeting m, string kind, string id)
+    {
+        if (kind == TranscriptionBackends.Mendeleev) m.MendeleevMeetingId = id;
+        else m.SpeakrRecordingID = int.Parse(id, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     private async Task Run(Guid meetingId, CancellationToken ct)
     {
         var meeting = _store.Find(meetingId);
         if (meeting is null) return;
 
-        var client = _clientFactory(_settings.SpeakrBaseUrl, _settings.SpeakrApiKey);
-        if (client is null)
+        var kind = KindOf(meeting);
+        var backend = _backends(kind);
+        if (backend is null)
         {
             meeting.Status = MeetingStatus.Failed;
-            meeting.ErrorMessage = "Speakr не настроен — заполните URL и API-ключ в настройках";
+            meeting.ErrorMessage = TranscriptionBackendFactory.NotConfiguredMessage(kind);
             _store.Save(meeting);
             return;
         }
 
-        if (meeting.SpeakrRecordingID is null)
+        if (RemoteIdOf(meeting) is null)
         {
             meeting.Status = MeetingStatus.Uploading;
             meeting = _store.Save(meeting);
@@ -168,9 +187,9 @@ public sealed class UploadPipeline
             {
                 // Падение здесь до получения id — при следующем старте загрузка повторится
                 // (редкий дубль на сервере приемлем для личного инструмента).
-                var response = await client.Upload(_store.AudioPath(meeting), ct).ConfigureAwait(false);
-                meeting.SpeakrRecordingID = response.Id;
-                meeting.RemoteStatus = response.Status;
+                var id = await backend.Upload(_store.AudioPath(meeting), ct).ConfigureAwait(false);
+                SetRemoteId(meeting, kind, id);
+                meeting.RemoteStatus = "PENDING";
                 meeting.Status = MeetingStatus.Processing;
                 meeting = _store.Save(meeting);
             }
@@ -185,31 +204,31 @@ public sealed class UploadPipeline
             }
         }
 
-        if (meeting.SpeakrRecordingID is not { } remoteId) return;
+        if (RemoteIdOf(meeting) is not { } remoteId) return;
 
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                var status = await client.Status(remoteId, ct).ConfigureAwait(false);
+                var status = await backend.GetStatus(remoteId, ct).ConfigureAwait(false);
                 // Пока ждали ответ, встречу могли отправить на повтор или удалить.
                 if (ct.IsCancellationRequested) return;
-                meeting.RemoteStatus = status.Status;
+                meeting.RemoteStatus = status.Raw;
                 meeting = _store.Save(meeting);
 
-                if (status.Status == SpeakrRemoteStatus.Completed)
+                if (status.State == RemoteState.Completed)
                 {
-                    await Finish(meeting, remoteId, client, ct).ConfigureAwait(false);
+                    await Finish(meeting, remoteId, backend, ct).ConfigureAwait(false);
                     return;
                 }
-                if (status.Status == SpeakrRemoteStatus.Failed)
+                if (status.State == RemoteState.Failed)
                 {
                     meeting.Status = MeetingStatus.Failed;
-                    meeting.ErrorMessage = status.ErrorMessage ?? "Speakr сообщил об ошибке обработки";
+                    meeting.ErrorMessage = status.Error ?? $"{TranscriptionBackends.Display(kind)} сообщил об ошибке обработки";
                     _store.Save(meeting);
                     return;
                 }
-                // PENDING/QUEUED/PROCESSING/SUMMARIZING — продолжаем поллинг.
+                // Принято/в очереди/обрабатывается — продолжаем поллинг.
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -217,41 +236,31 @@ public sealed class UploadPipeline
             }
             catch (Exception ex)
             {
-                // Недоступность Speakr (или сбой на этапе забора результатов) — статус не трогаем, пробуем снова.
+                // Недоступность сервиса, истёкший вход (повторится с паузой) или сбой на этапе забора результатов —
+                // статус не трогаем, пробуем снова.
                 Log.Error($"UploadPipeline: ошибка поллинга для {meetingId}", ex);
             }
             await Task.Delay(PollInterval, ct).ConfigureAwait(false);
         }
     }
 
-    private async Task Finish(Meeting meeting, int remoteId, SpeakrClient client, CancellationToken ct)
+    private async Task Finish(Meeting meeting, string remoteId, ITranscriptionBackend backend, CancellationToken ct)
     {
         var folder = _store.FolderPath(meeting);
+        var result = await backend.GetResult(remoteId, ct).ConfigureAwait(false);
 
-        var transcript = await client.TranscriptRaw(remoteId, ct).ConfigureAwait(false);
-        AtomicFile.WriteAllBytes(Path.Combine(folder, "transcript.json"), transcript);
+        AtomicFile.WriteAllBytes(Path.Combine(folder, "transcript.json"), result.TranscriptJson);
         meeting.TranscriptFileName = "transcript.json";
 
         // Markdown — производный файл: неудача рендера не валит обработку (дочинится на старте).
-        if (TranscriptMarkdown.Write(transcript, meeting, folder) is { } markdown)
+        if (TranscriptMarkdown.Write(result.TranscriptJson, meeting, folder) is { } markdown)
         {
             meeting.TranscriptMarkdownFileName = markdown;
         }
 
-        var summary = await client.Summary(remoteId, ct).ConfigureAwait(false);
-        AtomicFile.WriteAllText(Path.Combine(folder, "notes.md"), summary.Summary ?? "");
+        AtomicFile.WriteAllText(Path.Combine(folder, "notes.md"), result.Notes);
         meeting.SummaryFileName = "notes.md";
-
-        // Заголовок — строго до возможного удаления записи на сервере. Не критично.
-        try
-        {
-            var remote = await client.Recording(remoteId, ct).ConfigureAwait(false);
-            if (remote.Title?.Trim() is { Length: > 0 } title) meeting.Title = title;
-        }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
-        {
-            Log.Error($"UploadPipeline: не удалось получить заголовок записи {remoteId}", ex);
-        }
+        if (result.Title is { Length: > 0 } title) meeting.Title = title;
 
         if (ct.IsCancellationRequested) return;
         meeting.Status = MeetingStatus.Done;
@@ -259,30 +268,29 @@ public sealed class UploadPipeline
         MeetingDone?.Invoke(meeting.Id);
 
         if (!_settings.DeleteAfterUploadEnabled) return;
-        await PerformRemoteDelete(meeting.Id, remoteId, client).ConfigureAwait(false);
+        await PerformRemoteDelete(meeting.Id, remoteId, backend).ConfigureAwait(false);
     }
 
-    /// <summary>Повторная попытка удалить запись в Speakr (кнопка в карточке встречи).</summary>
+    /// <summary>Повторная попытка удалить запись на сервере (кнопка в карточке встречи).</summary>
     public void DeleteRemotely(Meeting meeting)
     {
-        if (meeting.SpeakrRecordingID is not { } remoteId || meeting.DeletedRemotely) return;
-        var client = _clientFactory(_settings.SpeakrBaseUrl, _settings.SpeakrApiKey);
-        if (client is null) return;
-        _ = Task.Run(() => PerformRemoteDelete(meeting.Id, remoteId, client));
+        if (RemoteIdOf(meeting) is not { } remoteId || meeting.DeletedRemotely) return;
+        if (_backends(KindOf(meeting)) is not { } backend) return;
+        _ = Task.Run(() => PerformRemoteDelete(meeting.Id, remoteId, backend));
     }
 
     /// <summary>Результат удаления сохраняется в meeting.json в обоих исходах — иначе провал был бы невидим.</summary>
-    private async Task PerformRemoteDelete(Guid meetingId, int remoteId, SpeakrClient client)
+    private async Task PerformRemoteDelete(Guid meetingId, string remoteId, ITranscriptionBackend backend)
     {
         string? error = null;
         try
         {
-            await client.Delete(remoteId).ConfigureAwait(false);
+            await backend.Delete(remoteId, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            Log.Error($"UploadPipeline: не удалось удалить запись {remoteId} на Speakr", ex);
-            error = $"Не удалось удалить запись в Speakr: {ex.Message}";
+            Log.Error($"UploadPipeline: не удалось удалить запись {remoteId} на {backend.Kind}", ex);
+            error = $"Не удалось удалить запись в {TranscriptionBackends.Display(backend.Kind)}: {ex.Message}";
         }
         _store.Update(meetingId, m =>
         {

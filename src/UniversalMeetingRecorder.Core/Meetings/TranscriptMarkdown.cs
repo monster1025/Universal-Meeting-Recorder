@@ -23,6 +23,7 @@ public static class TranscriptMarkdown
         sb.Append($"started: {Yaml(IsoDate.Format(meeting.StartDate))}\n");
         if (meeting.EndDate is { } end) sb.Append($"ended: {Yaml(IsoDate.Format(end))}\n");
         if (meeting.SpeakrRecordingID is { } rid) sb.Append($"speakr_recording_id: {rid}\n");
+        if (meeting.MendeleevMeetingId is { } mid) sb.Append($"mendeleev_meeting_id: {Yaml(mid)}\n");
         var speakers = OrderedSpeakers(segments);
         if (speakers.Count > 0) sb.Append($"speakers: [{string.Join(", ", speakers.Select(Yaml))}]\n");
         sb.Append($"segments: {segments.Count}\n");
