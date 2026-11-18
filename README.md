@@ -66,6 +66,18 @@ Debug-сборку от Release отличают такие признаки:
 
 Иконка `Assets/app.ico` — производный файл от генератора иконки macOS-версии (`generate_app_icon.swift`). Править нужно генератор, затем выполнить `python3 tools/make_ico.py <путь к AppIcon.appiconset macOS-версии>`.
 
+## Релизы
+
+Сборку и публикацию делает GitHub Actions (`.github/workflows`):
+- **CI** — сборка и тесты на каждый push в `main` и на pull request'ы.
+- **Release** — по тегу `vMAJOR.MINOR.PATCH` собирает самодостаточный `UniversalMeetingRecorder.exe`, кладёт его в zip вместе с README и `install.ps1` и публикует в GitHub Releases вместе с SHA-256. Версия берётся из тега; тег с суффиксом (`v1.2.0-beta1`) помечается как pre-release.
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+Чтобы установить: распаковать zip и запустить `pwsh install.ps1` (по умолчанию он ищет exe в `dist/win-x64`, поэтому укажите `-Source .\UniversalMeetingRecorder.exe`).
+
 ## Где что лежит
 
 Переименование в Universal Meeting Recorder не тронуло то, что связывает приложение с macOS-версией:

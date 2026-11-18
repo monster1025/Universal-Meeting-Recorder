@@ -1,0 +1,21 @@
+name: CI
+
+# Сборка и тесты на каждый push в main и на pull request'ы.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build
+        run: dotnet build UniversalMeetingRecorder.slnx -c Release
+      # Golden-тесты на данных macOS-версии без этих данных молча проходят; остальные работают как обычно.
+      - name: Test
+        run: dotnet test UniversalMeetingRecorder.slnx -c Release --no-build

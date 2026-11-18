@@ -1,0 +1,60 @@
+name: Release
+
+# Релиз по тегу вида v1.2.3: тесты, самодостаточный single-file exe, zip + SHA-256 в GitHub Releases.
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # создание релиза и загрузка файлов
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          if ($version -notmatch '^\d+\.\d+\.\d+') { throw "Тег '$tag' не похож на vMAJOR.MINOR.PATCH" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "prerelease=$(if ($version -match '-') { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        run: dotnet test UniversalMeetingRecorder.slnx -c Release
+
+      - name: Publish win-x64
+        run: >
+          dotnet publish src/UniversalMeetingRecorder.App -c Release -r win-x64
+          --self-contained true -p:PublishSingleFile=true
+          -p:Version=${{ steps.ver.outputs.version }}
+          -o dist/win-x64
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "UniversalMeetingRecorder-${{ github.ref_name }}-win-x64"
+          New-Item -ItemType Directory -Force -Path "dist/pkg/$name" | Out-Null
+          Copy-Item dist/win-x64/UniversalMeetingRecorder.exe "dist/pkg/$name/"
+          Copy-Item README.md "dist/pkg/$name/"
+          Copy-Item tools/install.ps1 "dist/pkg/$name/"
+          Compress-Archive -Path "dist/pkg/$name" -DestinationPath "dist/$name.zip"
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File "dist/$name.zip.sha256" -Encoding ascii
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.zip.sha256
+          generate_release_notes: true
+          prerelease: ${{ steps.ver.outputs.prerelease }}
