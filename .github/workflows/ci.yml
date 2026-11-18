@@ -3,7 +3,7 @@ name: CI
 # Сборка и тесты на каждый push в main и на pull request'ы.
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
 
 jobs:
