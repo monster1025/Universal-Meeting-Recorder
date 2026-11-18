@@ -1,0 +1,15 @@
+<Project>
+  <!--
+    Общие настройки всех проектов порта. EnableWindowsTargeting позволяет собирать
+    net*-windows проект (WPF/WinForms) не на Windows — например, на Mac, где живёт
+    основная разработка. Запустить App можно только на Windows; Core и тесты — везде.
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+</Project>

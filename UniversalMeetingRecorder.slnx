@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/UniversalMeetingRecorder.App/UniversalMeetingRecorder.App.csproj" />
+    <Project Path="src/UniversalMeetingRecorder.Core/UniversalMeetingRecorder.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/UniversalMeetingRecorder.Core.Tests/UniversalMeetingRecorder.Core.Tests.csproj" />
+  </Folder>
+</Solution>
